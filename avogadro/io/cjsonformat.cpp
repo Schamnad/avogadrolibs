@@ -82,6 +82,9 @@ bool CjsonFormat::read(std::istream &file, Molecule &molecule)
   value = root["inchi"];
   if (!value.empty() && value.isString())
     molecule.setData("inchi", value.asString());
+  value = root["formula"];
+  if (!value.empty() && value.isString())
+    molecule.setData("formula", value.asString());
 
   value = root["unit cell"];
   if (value.type() == Json::objectValue) {
@@ -105,163 +108,9 @@ bool CjsonFormat::read(std::istream &file, Molecule &molecule)
     molecule.setUnitCell(unitCell);
   }
 
-  // Read in the atomic data.
-  Value atoms = root["atoms"];
-  if (atoms.empty()) {
-    appendError("Error: no \"atom\" key found");
-    return false;
-  }
-  else if (atoms.type() != Json::objectValue) {
-    appendError("Error: \"atom\" is not of type object");
-    return false;
-  }
+  //Read Atoms Object from CJSON
+  return readAtoms(root, molecule) && readBonds(root, molecule) && readVibrations(root, molecule);
 
-  value =  atoms["elements"];
-  if (value.empty()) {
-    appendError("Error: no \"atoms.elements\" key found");
-    return false;
-  }
-  else if (value.type() != Json::objectValue) {
-    appendError("Error: \"atoms.elements\" is not of type object");
-    return false;
-  }
-
-  value = value["number"];
-  if (value.empty()) {
-    appendError("Error: no \"atoms.elements.number\" key found");
-    return false;
-  }
-
-  Index atomCount(0);
-  if (value.isArray()) {
-    atomCount = static_cast<Index>(value.size());
-    for (Index i = 0; i < atomCount; ++i)
-      molecule.addAtom(static_cast<unsigned char>(value.get(i, 0).asInt()));
-  }
-  else {
-    appendError("Error: \"atoms.elements.number\" is not of type array");
-    return false;
-  }
-
-  Value coords = atoms["coords"];
-  if (!coords.empty()) {
-    value = coords["3d"];
-    if (value.isArray()) {
-      if (value.size() && atomCount != static_cast<Index>(value.size() / 3)) {
-        appendError("Error: number of elements != number of 3D coordinates.");
-        return false;
-      }
-      for (Index i = 0; i < atomCount; ++i) {
-        Atom a = molecule.atom(i);
-        a.setPosition3d(Vector3(value.get(3 * i + 0, 0).asDouble(),
-                                value.get(3 * i + 1, 0).asDouble(),
-                                value.get(3 * i + 2, 0).asDouble()));
-      }
-    }
-
-    value = coords["2d"];
-    if (value.isArray()) {
-      if (value.size() && atomCount != static_cast<Index>(value.size() / 2)) {
-        appendError("Error: number of elements != number of 2D coordinates.");
-        return false;
-      }
-      for (Index i = 0; i < atomCount; ++i) {
-        Atom a = molecule.atom(i);
-        a.setPosition2d(Vector2(value.get(2 * i + 0, 0).asDouble(),
-                                value.get(2 * i + 1, 0).asDouble()));
-      }
-    }
-
-    value = coords["3d fractional"];
-    if (value.type() == Json::arrayValue) {
-      if (!molecule.unitCell()) {
-        appendError("Cannot interpret fractional coordinates without "
-                    "unit cell.");
-        return false;
-      }
-      if (value.size() && atomCount != static_cast<size_t>(value.size() / 3)) {
-        appendError("Error: number of elements != number of fractional "
-                    "coordinates.");
-        return false;
-      }
-      Array<Vector3> fcoords;
-      fcoords.reserve(atomCount);
-      for (Index i = 0; i < atomCount; ++i) {
-        fcoords.push_back(
-              Vector3(static_cast<Real>(value.get(i * 3 + 0, 0).asDouble()),
-                      static_cast<Real>(value.get(i * 3 + 1, 0).asDouble()),
-                      static_cast<Real>(value.get(i * 3 + 2, 0).asDouble())));
-      }
-      CrystalTools::setFractionalCoordinates(molecule, fcoords);
-    }
-  }
-
-  // Now for the bonding data.
-  Value bonds = root["bonds"];
-  if (!bonds.empty()) {
-    value = bonds["connections"];
-    if (value.empty()) {
-      appendError("Error: no \"bonds.connections\" key found");
-      return false;
-    }
-
-    value = value["index"];
-    Index bondCount(0);
-    if (value.isArray()) {
-      bondCount = static_cast<Index>(value.size() / 2);
-      for (Index i = 0; i < bondCount * 2; i += 2) {
-        molecule.addBond(
-              molecule.atom(static_cast<Index>(value.get(i + 0, 0).asInt())),
-              molecule.atom(static_cast<Index>(value.get(i + 1, 0).asInt())));
-      }
-    }
-    else {
-      appendError("Warning, no bonding information found.");
-    }
-
-    value = bonds["order"];
-    if (value.isArray()) {
-      if (bondCount != static_cast<Index>(value.size())) {
-        appendError("Error: number of bonds != number of bond orders.");
-        return false;
-      }
-      for (Index i = 0; i < bondCount; ++i)
-        molecule.bond(i).setOrder(
-          static_cast<unsigned char>(value.get(i, 1).asInt()));
-    }
-  }
-
-  // Check for vibrational data.
-  Value vibrations = root["vibrations"];
-  if (!vibrations.empty() && vibrations.isObject()) {
-    Value modes = vibrations["modes"];
-    Value freqs = vibrations["frequencies"];
-    Value inten = vibrations["intensities"];
-    Value eigenVectors = vibrations["eigenVectors"];
-    assert(modes.size() == freqs.size());
-    assert(modes.size() == inten.size());
-    assert(modes.size() == eigenVectors.size());
-    Array<double> frequencies;
-    Array<double> intensities;
-    Array< Array<Vector3> > Lx;
-    for (size_t i = 0; i < modes.size(); ++i) {
-      frequencies.push_back(freqs.get(i, 0).asDouble());
-      intensities.push_back(inten.get(i, 0).asDouble());
-      Array<Vector3> modeLx;
-      Value lx = eigenVectors.get(i, 0);
-      if (!lx.empty() && lx.isArray()) {
-        modeLx.resize(lx.size() / 3);
-        for (size_t k = 0; k < lx.size(); ++k)
-          modeLx[k / 3][k % 3] = lx.get(k, 0).asDouble();
-        Lx.push_back(modeLx);
-      }
-    }
-    molecule.setVibrationFrequencies(frequencies);
-    molecule.setVibrationIntensities(intensities);
-    molecule.setVibrationLx(Lx);
-  }
-
-  return true;
 }
 
 bool CjsonFormat::write(std::ostream &file, const Molecule &molecule)
@@ -485,6 +334,213 @@ vector<std::string> CjsonFormat::mimeTypes() const
   vector<std::string> mime;
   mime.push_back("chemical/x-cjson");
   return mime;
+}
+
+bool CjsonFormat::readAtoms(Value &root, Molecule &molecule){
+  // Read in the atomic data.
+  Value atoms = root["atoms"];
+  if (testEmpty(atoms,"atoms") || testIsNotObject(atoms,"atoms")){
+    return false;
+  }
+
+  //Element values start here:
+  Value elements =  atoms["elements"];
+  if (testEmpty(value,"atoms.elements") || testIsNotObject(value,"atoms.elements")){
+    return false;
+  }
+
+  Value value = elements["number"];
+  Index atomCount(0);
+
+  if (!testEmpty(value, "atoms.elements.number") && testIfArray(value, "atoms.elements.number") {
+    atomCount = static_cast<Index>(value.size());
+    for (Index i = 0; i < atomCount; ++i)
+      molecule.addAtom(static_cast<unsigned char>(value.get(i, 0).asInt()));
+  }
+  else {
+    return false;
+  }
+
+  value = elements["atom count"];
+  if (!value.empty() && value.isIntegral())
+    molecule.setData("atomCount", value.asInt());
+
+  value = elements["heavy atom count"];
+  if (!value.empty() && value.isIntegral())
+    molecule.setData("heavyAtomCount", value.asInt());
+  //End of elements object
+
+  //Start of Coords object:
+  Value coords = atoms["coords"];
+  if (!coords.empty()) {
+    value = coords["3d"];
+    if (value.isArray()) {
+      if (value.size() && atomCount != static_cast<Index>(value.size() / 3)) {
+        appendError("Error: number of elements != number of 3D coordinates.");
+        return false;
+      }
+      for (Index i = 0; i < atomCount; ++i) {
+        Atom a = molecule.atom(i);
+        a.setPosition3d(Vector3(value.get(3 * i + 0, 0).asDouble(),
+                                value.get(3 * i + 1, 0).asDouble(),
+                                value.get(3 * i + 2, 0).asDouble()));
+      }
+    }
+
+    value = coords["2d"];
+    if (value.isArray()) {
+      if (value.size() && atomCount != static_cast<Index>(value.size() / 2)) {
+        appendError("Error: number of elements != number of 2D coordinates.");
+        return false;
+      }
+      for (Index i = 0; i < atomCount; ++i) {
+        Atom a = molecule.atom(i);
+        a.setPosition2d(Vector2(value.get(2 * i + 0, 0).asDouble(),
+                                value.get(2 * i + 1, 0).asDouble()));
+      }
+    }
+
+    value = coords["3d fractional"];
+    if (value.type() == Json::arrayValue) {
+      if (!molecule.unitCell()) {
+        appendError("Cannot interpret fractional coordinates without "
+                    "unit cell.");
+        return false;
+      }
+      if (value.size() && atomCount != static_cast<size_t>(value.size() / 3)) {
+        appendError("Error: number of elements != number of fractional "
+                    "coordinates.");
+        return false;
+      }
+      Array<Vector3> fcoords;
+      fcoords.reserve(atomCount);
+      for (Index i = 0; i < atomCount; ++i) {
+        fcoords.push_back(
+              Vector3(static_cast<Real>(value.get(i * 3 + 0, 0).asDouble()),
+                      static_cast<Real>(value.get(i * 3 + 1, 0).asDouble()),
+                      static_cast<Real>(value.get(i * 3 + 2, 0).asDouble())));
+      }
+      CrystalTools::setFractionalCoordinates(molecule, fcoords);
+    }
+  }
+  //End of coords
+
+  //Start of Orbitals - Discuss if we require a Core Orbitals class(?) - orbital names and indices remain
+  Value orbitals = atoms["orbitals"];
+  if (testEmpty(value,"atoms.orbitals") || testIsNotObject(value,"atoms.orbitals")){
+    return false;
+  }
+  value = orbitals["indices"];
+  //End of Orbitals
+
+  /*
+  Value value = atoms["core electrons"];
+  Index coreElectronCount(0);
+
+  if (!testEmpty(value, "atoms.coreElectron") && testIfArray(value, "atoms.coreElectron") {
+    coreElectronCount = static_cast<Index>(value.size());
+    for (Index i = 0; i < coreElectronCount; ++i)
+      molecule.addAtom(static_cast<unsigned char>(value.get(i, 0).asInt()));
+  }
+  else {
+    return false;
+  }
+  */
+
+  return true;
+}
+
+bool CjsonFormat::readBonds(Value &root, Molecule &molecule){
+  Value bonds = root["bonds"];
+  Value value;
+  if (!bonds.empty()) {
+    value = bonds["connections"];
+    if (testEmpty(value, "bonds.connections")) {
+      return false;
+    }
+
+    value = value["index"];
+    Index bondCount(0);
+    if (value.isArray()) {
+      bondCount = static_cast<Index>(value.size() / 2);
+      for (Index i = 0; i < bondCount * 2; i += 2) {
+        molecule.addBond(
+              molecule.atom(static_cast<Index>(value.get(i + 0, 0).asInt())),
+              molecule.atom(static_cast<Index>(value.get(i + 1, 0).asInt())));
+      }
+    }
+    else {
+      appendError("Warning, no bonding information found.");
+    }
+
+    value = bonds["order"];
+    if (value.isArray()) {
+      if (bondCount != static_cast<Index>(value.size())) {
+        appendError("Error: number of bonds != number of bond orders.");
+        return false;
+      }
+      for (Index i = 0; i < bondCount; ++i)
+        molecule.bond(i).setOrder(
+          static_cast<unsigned char>(value.get(i, 1).asInt()));
+    }
+  }
+}
+
+bool CjsonFormat::readVibrations(Value &root, Molecule &molecule){
+  Value vibrations = root["vibrations"];
+  if ( !testEmpty(vibrations, "vibrations") && !testIsNotObject(vibrations, "vibrations")) {
+    Value modes = vibrations["modes"];
+    Value freqs = vibrations["frequencies"];
+    Value inten = vibrations["intensities"];
+    Value eigenVectors = vibrations["eigenVectors"];
+    assert(modes.size() == freqs.size());
+    assert(modes.size() == inten.size());
+    assert(modes.size() == eigenVectors.size());
+    Array<double> frequencies;
+    Array<double> intensities;
+    Array< Array<Vector3> > Lx;
+    for (size_t i = 0; i < modes.size(); ++i) {
+      frequencies.push_back(freqs.get(i, 0).asDouble());
+      intensities.push_back(inten.get(i, 0).asDouble());
+      Array<Vector3> modeLx;
+      Value lx = eigenVectors.get(i, 0);
+      if (!lx.empty() && lx.isArray()) {
+        modeLx.resize(lx.size() / 3);
+        for (size_t k = 0; k < lx.size(); ++k)
+          modeLx[k / 3][k % 3] = lx.get(k, 0).asDouble();
+        Lx.push_back(modeLx);
+      }
+    }
+    molecule.setVibrationFrequencies(frequencies);
+    molecule.setVibrationIntensities(intensities);
+    molecule.setVibrationLx(Lx);
+  }
+}
+
+bool CjsonFormat::testEmpty(Value &value, std::string &key){
+  if (value.empty()) {
+    string errorKey = "Error: no \"" + key +"\" key found";
+    appendError(errorKey);
+    return true;
+  }
+  return false;
+}
+
+bool CjsonFormat::testIsNotObject(Value &value, std::string &key){
+  if (value.type() != Json::objectValue) {
+    string errorKey = "Error: \"" + key + "\" is not of type object";
+    appendError(errorKey);
+    return true;
+  }
+  return false;
+}
+
+bool CjsonFormat::testIfArray(Value &value, std::string &Key){
+  if(!value.isArray()){
+    appendError("Error: \""+ key + "\" is not of type array");
+    return false
+  }
+  return true;
 }
 
 } // end Io namespace
